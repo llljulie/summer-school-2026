@@ -1,0 +1,952 @@
+openapi: 3.0.3
+info:
+  title: API Вертикаль — Клиентское приложение
+  description: |
+    API для клиентского мобильного приложения скалодрома «Вертикаль».
+    Бэкенд выступает black-box источником истины.
+    Текущая поставка — только сценарии для роли «Клиент».
+  version: 1.0.0
+  contact:
+    name: Команда разработки
+servers:
+  - url: https://api.vertical-climbing.ru/v1
+    description: Production сервер
+  - url: https://staging-api.vertical-climbing.ru/v1
+    description: Тестовый стенд
+
+tags:
+  - name: Auth
+    description: Регистрация и аутентификация клиента
+  - name: Schedule
+    description: Расписание тренировок
+  - name: Bookings
+    description: Бронирования клиента
+  - name: Profile
+    description: Профиль и статусы клиента
+  - name: Ratings
+    description: Оценки инструкторов
+  - name: Push
+    description: Управление push-уведомлениями
+
+paths:
+  /auth/request-code:
+    post:
+      tags: [Auth]
+      summary: Запрос SMS-кода для регистрации/входа
+      description: Отправляет SMS с одноразовым кодом на указанный номер телефона
+      operationId: requestSmsCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  type: string
+                  description: Номер телефона в формате E.164
+                  pattern: '^\+[1-9][0-9]{10,14}$'
+                  example: '+79001234567'
+      responses:
+        '200':
+          description: Код отправлен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 'Код отправлен'
+                  retry_after_seconds:
+                    type: integer
+                    description: Через сколько секунд можно запросить код повторно
+                    example: 60
+        '429':
+          description: Превышен лимит попыток
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                code: RATE_LIMIT_EXCEEDED
+                message: 'Слишком много попыток. Попробуйте через 15 минут'
+        '400':
+          description: Невалидный номер телефона
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/verify-code:
+    post:
+      tags: [Auth]
+      summary: Подтверждение SMS-кода
+      description: Проверяет код и создаёт сессию (регистрация или вход)
+      operationId: verifySmsCode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone:
+                  type: string
+                  pattern: '^\+[1-9][0-9]{10,14}$'
+                  example: '+79001234567'
+                code:
+                  type: string
+                  description: SMS-код
+                  minLength: 4
+                  maxLength: 6
+                  example: '123456'
+      responses:
+        '200':
+          description: Успешная аутентификация
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    description: JWT токен для авторизации запросов
+                  token_type:
+                    type: string
+                    example: Bearer
+                  expires_in:
+                    type: integer
+                    example: 86400
+                  client:
+                    $ref: '#/components/schemas/Client'
+        '400':
+          description: Неверный код или ошибка валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Превышен лимит попыток
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Выход из системы
+      description: Завершает сессию клиента
+      operationId: logout
+      security: [BearerAuth: []]
+      responses:
+        '200':
+          description: Успешный выход
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 'Вы вышли из системы'
+
+  /version:
+    get:
+      tags: [Auth]
+      summary: Проверка версии API
+      description: Используется для проверки совместимости приложения и API
+      operationId: getApiVersion
+      responses:
+        '200':
+          description: Информация о версии
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_version:
+                    type: string
+                    example: '1.0.0'
+                  min_app_version:
+                    type: string
+                    description: Минимальная версия приложения, совместимая с этим API
+                    example: '1.0.0'
+
+  /schedule/slots:
+    get:
+      tags: [Schedule]
+      summary: Получение списка слотов
+      description: |
+        Возвращает список тренировочных слотов.
+        По умолчанию — на 7 дней от текущего момента.
+      operationId: getSlots
+      security: [BearerAuth: []]
+      parameters:
+        - name: date_from
+          in: query
+          description: Начало периода (включительно) в ISO 8601 (YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+        - name: date_to
+          in: query
+          description: Конец периода (включительно) в ISO 8601 (YYYY-MM-DD), не более 3 месяцев от date_from
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Список слотов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slots:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrainingSlot'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimit'
+
+  /schedule/slots/{slot_id}:
+    get:
+      tags: [Schedule]
+      summary: Получение деталей слота
+      operationId: getSlotDetails
+      security: [BearerAuth: []]
+      parameters:
+        - name: slot_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Детали слота
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingSlot'
+        '404':
+          description: Слот не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /bookings:
+    get:
+      tags: [Bookings]
+      summary: Получение всех броней клиента
+      description: Возвращает предстоящие и исторические брони клиента
+      operationId: getBookings
+      security: [BearerAuth: []]
+      parameters:
+        - name: status
+          in: query
+          description: Фильтр по статусу
+          schema:
+            type: string
+            enum: [active, cancelled_by_client, cancelled_by_club, completed, no_show]
+        - name: limit
+          in: query
+          description: Количество записей на страницу (по умолчанию 20)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          description: Смещение для пагинации
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Список броней
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Booking'
+                  total:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /bookings/upcoming:
+    get:
+      tags: [Bookings]
+      summary: Получение предстоящих броней клиента
+      description: Возвращает только активные брони (status = active)
+      operationId: getUpcomingBookings
+      security: [BearerAuth: []]
+      responses:
+        '200':
+          description: Список предстоящих броней
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bookings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Booking'
+
+  /bookings:
+    post:
+      tags: [Bookings]
+      summary: Создание бронирования
+      description: |
+        Запись клиента на тренировку.
+        Требуется Idempotency-Key в заголовке для защиты от дублирующих запросов.
+      operationId: createBooking
+      security: [BearerAuth: []]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Уникальный ключ идемпотентности (UUID)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slot_id, equipment_type]
+              properties:
+                slot_id:
+                  type: string
+                  format: uuid
+                equipment_type:
+                  type: string
+                  enum: [own, rental]
+      responses:
+        '201':
+          description: Бронь создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '409':
+          description: Конфликт — клиент уже записан на этот слот или место занято
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                already_booked:
+                  value:
+                    code: ALREADY_BOOKED
+                    message: 'Вы уже записаны на эту тренировку'
+                slot_full:
+                  value:
+                    code: SLOT_FULL
+                    message: 'Свободные места закончились'
+                rental_unavailable:
+                  value:
+                    code: RENTAL_UNAVAILABLE
+                    message: 'Весь прокат на это время занят'
+        '400':
+          description: Невалидный запрос
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimit'
+
+  /bookings/{booking_id}:
+    delete:
+      tags: [Bookings]
+      summary: Отмена бронирования клиентом
+      description: |
+        Отменяет бронь. Если до начала слота ≤ 10 минут — начисляется штрафной балл.
+      operationId: cancelBooking
+      security: [BearerAuth: []]
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Бронь отменена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '409':
+          description: Отмена недоступна (например, слот уже завершён или отменён скалодромом)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Клиент заблокирован или нет прав
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Бронь не найдена
+
+  /bookings/{booking_id}/can-cancel:
+    get:
+      tags: [Bookings]
+      summary: Проверка возможности отмены
+      description: |
+        Возвращает информацию о том, можно ли отменить бронь,
+        и какая будет применена штрафная политика.
+      operationId: getCancelAvailability
+      security: [BearerAuth: []]
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Информация об отмене
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  can_cancel:
+                    type: boolean
+                  penalty_applied:
+                    type: boolean
+                    description: Будет ли начислен штрафной балл
+                  minutes_to_start:
+                    type: integer
+                    description: Минут до начала тренировки
+                  warning_message:
+                    type: string
+                    description: Сообщение для показа перед отменой (если penalty_applied = true)
+
+  /ratings:
+    post:
+      tags: [Ratings]
+      summary: Оценка инструктора
+      description: |
+        Ставит оценку инструктору по завершённой тренировке.
+        Доступно только в течение 24 часов после окончания слота.
+      operationId: rateInstructor
+      security: [BearerAuth: []]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [booking_id, score]
+              properties:
+                booking_id:
+                  type: string
+                  format: uuid
+                score:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                  description: Оценка по шкале 1–5
+      responses:
+        '201':
+          description: Оценка сохранена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstructorRating'
+        '409':
+          description: Оценка уже поставлена или окно истекло
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Невалидный запрос
+
+  /profile:
+    get:
+      tags: [Profile]
+      summary: Получение профиля клиента
+      operationId: getProfile
+      security: [BearerAuth: []]
+      responses:
+        '200':
+          description: Данные профиля
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Client'
+
+  /profile/loyalty:
+    get:
+      tags: [Profile]
+      summary: Получение статуса лояльности
+      operationId: getLoyaltyStatus
+      security: [BearerAuth: []]
+      responses:
+        '200':
+          description: Данные программы лояльности
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoyaltyAccount'
+        '404':
+          description: У клиента нет активного счёта лояльности
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /profile/penalty:
+    get:
+      tags: [Profile]
+      summary: Получение статуса штрафных баллов
+      operationId: getPenaltyStatus
+      security: [BearerAuth: []]
+      responses:
+        '200':
+          description: Данные штрафного счёта
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PenaltyAccount'
+
+  /profile/push-token:
+    post:
+      tags: [Push]
+      summary: Регистрация FCM-токена
+      description: Сохраняет push-токен устройства для отправки уведомлений
+      operationId: registerPushToken
+      security: [BearerAuth: []]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fcm_token]
+              properties:
+                fcm_token:
+                  type: string
+                  description: Firebase Cloud Messaging токен
+                push_enabled:
+                  type: boolean
+                  description: Включены ли уведомления у клиента
+                  default: true
+      responses:
+        '200':
+          description: Токен зарегистрирован
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 'Токен успешно зарегистрирован'
+
+  /profile/push-token:
+    delete:
+      tags: [Push]
+      summary: Удаление FCM-токена
+      description: Удаляет токен устройства при выходе или отключении уведомлений
+      operationId: unregisterPushToken
+      security: [BearerAuth: []]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fcm_token:
+                  type: string
+                  description: Конкретный токен для удаления (если не указан — удалить все токены клиента)
+      responses:
+        '200':
+          description: Токен удалён
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: 'Токен успешно удалён'
+
+  /profile/push-settings:
+    patch:
+      tags: [Push]
+      summary: Обновление настроек уведомлений
+      operationId: updatePushSettings
+      security: [BearerAuth: []]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                push_enabled:
+                  type: boolean
+                  description: Включить/отключить все push-уведомления (кроме критических)
+      responses:
+        '200':
+          description: Настройки обновлены
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  push_enabled:
+                    type: boolean
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT токен, полученный при аутентификации
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        code:
+          type: string
+          description: Код ошибки для логирования
+        message:
+          type: string
+          description: Понятное пользователю сообщение об ошибке
+        details:
+          type: object
+          description: Дополнительная информация (опционально)
+
+    Client:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        phone:
+          type: string
+          pattern: '^\+[1-9][0-9]{10,14}$'
+        display_name:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        last_login_at:
+          type: string
+          format: date-time
+
+    TrainingSlot:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        gym_id:
+          type: string
+          format: uuid
+        instructor:
+          $ref: '#/components/schemas/Instructor'
+        format:
+          $ref: '#/components/schemas/TrainingFormat'
+        zone:
+          $ref: '#/components/schemas/TrainingZone'
+        starts_at:
+          type: string
+          format: date-time
+        ends_at:
+          type: string
+          format: date-time
+        capacity:
+          type: integer
+          description: Максимальное количество мест
+        booked_count:
+          type: integer
+          description: Количество занятых мест
+        free_places:
+          type: integer
+          description: Количество свободных мест
+        base_price:
+          type: number
+          format: float
+          description: Цена тренировки без проката
+        rental_price:
+          type: number
+          format: float
+          description: Цена проката снаряжения (за 1 комплект)
+        rental_available:
+          type: boolean
+          description: Доступен ли прокат на этот слот
+        slot_status:
+          type: string
+          enum: [open, full, cancelled_by_club]
+        cancellation_reason:
+          type: string
+          nullable: true
+          description: Причина отмены (для cancelled_by_club)
+        address:
+          type: string
+          description: Адрес скалодрома
+        is_full:
+          type: boolean
+          description: deprecated, используйте slot_status
+
+    Instructor:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        full_name:
+          type: string
+        is_active:
+          type: boolean
+        stats:
+          $ref: '#/components/schemas/InstructorStats'
+
+    InstructorStats:
+      type: object
+      properties:
+        avg_rating:
+          type: number
+          format: float
+          minimum: 1.0
+          maximum: 5.0
+          description: Средний рейтинг инструктора
+        ratings_count:
+          type: integer
+          description: Количество оценок
+
+    TrainingFormat:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          enum: [beginner_bouldering, advanced_rope]
+        title:
+          type: string
+          example: 'Болдеринг с инструктажем (новички)'
+        max_capacity:
+          type: integer
+          description: '8 для новичковых, 16 для остальных'
+        duration_minutes:
+          type: integer
+          default: 90
+
+    TrainingZone:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          enum: [bouldering, rope]
+        title:
+          type: string
+          example: 'Болдеринг'
+
+    Booking:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        slot:
+          $ref: '#/components/schemas/TrainingSlot'
+        equipment_type:
+          type: string
+          enum: [own, rental]
+        training_price:
+          type: number
+          format: float
+        rental_price_applied:
+          type: number
+          format: float
+          description: Стоимость проката, применённая к брони (0 если не выбран)
+        loyalty_discount:
+          type: number
+          format: float
+          description: Размер скидки по программе лояльности
+        total_price:
+          type: number
+          format: float
+        status:
+          type: string
+          enum: [active, cancelled_by_client, cancelled_by_club, completed, no_show]
+        attended:
+          type: boolean
+          nullable: true
+        penalty_applied:
+          type: boolean
+          description: Был ли применён штраф при отмене
+        booked_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+        cancellation_reason:
+          type: string
+          nullable: true
+          description: Причина отмены (для cancelled_by_club)
+        can_rate:
+          type: boolean
+          description: Доступна ли оценка инструктора для этой брони
+
+    InstructorRating:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        booking_id:
+          type: string
+          format: uuid
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+        rated_at:
+          type: string
+          format: date-time
+
+    LoyaltyAccount:
+      type: object
+      properties:
+        client_id:
+          type: string
+          format: uuid
+        completed_visits_count:
+          type: integer
+          description: Общее количество завершённых посещений
+        visits_to_next_discount:
+          type: integer
+          minimum: 0
+          maximum: 9
+          description: Сколько посещений до следующей скидки (0 — скидка доступна)
+        discount_percent:
+          type: integer
+          description: Размер скидки в процентах (50 при 10-м посещении)
+        updated_at:
+          type: string
+          format: date-time
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/LoyaltyDiscountHistory'
+
+    LoyaltyDiscountHistory:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        booking_id:
+          type: string
+          format: uuid
+        visit_number:
+          type: integer
+        discount_amount:
+          type: number
+          format: float
+        applied_at:
+          type: string
+          format: date-time
+
+    PenaltyAccount:
+      type: object
+      properties:
+        client_id:
+          type: string
+          format: uuid
+        penalty_points:
+          type: integer
+          minimum: 0
+        visits_to_reset:
+          type: integer
+          minimum: 0
+          description: Количество успешных посещений подряд до сброса баллов
+        is_booking_blocked:
+          type: boolean
+        blocked_until:
+          type: string
+          format: date-time
+          nullable: true
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/PenaltyEvent'
+
+    PenaltyEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum: [late_cancel, reset_after_visits]
+        points_delta:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+  responses:
+    Unauthorized:
+      description: Неавторизованный доступ (токен отсутствует или невалиден)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: UNAUTHORIZED
+            message: 'Сессия истекла. Войдите заново'
+
+    RateLimit:
+      description: Превышен лимит запросов
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            code: TOO_MANY_REQUESTS
+            message: 'Слишком много попыток. Попробуйте через 15 минут'
